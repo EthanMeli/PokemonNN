@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-03-29T14:44:01.890478",
+  "generated_at": "2026-03-29T16:16:47.054157",
   "model_name": "all-mpnet-base-v2",
   "embedding_dim": 768,
   "num_species": 151,

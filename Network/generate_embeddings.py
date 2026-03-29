@@ -1,5 +1,5 @@
 """
-embeddings.py
+generate_embeddings.py
 ======================
 Generate LLM-initialized entity embeddings for all Gen 1 Pokémon species and moves.
 
@@ -749,7 +749,7 @@ def generate_embeddings(model_name: str = "all-mpnet-base-v2", output_dir: str =
     model_name: HuggingFace sentence-transformers model name.
                 'all-mpnet-base-v2' produces 768-dim embeddings (recommended).
                 'all-MiniLM-L6-v2' produces 384-dim (faster, smaller).
-      output_dir: Directory to save embedding tensors.
+    output_dir: Directory to save embedding tensors.
   """
   from sentence_transformers import SentenceTransformer
 
@@ -861,65 +861,65 @@ def generate_embeddings(model_name: str = "all-mpnet-base-v2", output_dir: str =
 
 
 def verify_embeddings(output_dir: str = "embeddings"):
-    """Quick verification: load saved embeddings and check similarity."""
-    print("\n--- Verification: loading saved embeddings ---")
+  """Quick verification: load saved embeddings and check similarity."""
+  print("\n--- Verification: loading saved embeddings ---")
 
-    species_emb = torch.load(os.path.join(output_dir, "species_embeddings.pt"))
-    move_emb = torch.load(os.path.join(output_dir, "move_embeddings.pt"))
-    index = torch.load(os.path.join(output_dir, "embedding_index.pt"))
+  species_emb = torch.load(os.path.join(output_dir, "species_embeddings.pt"))
+  move_emb = torch.load(os.path.join(output_dir, "move_embeddings.pt"))
+  index = torch.load(os.path.join(output_dir, "embedding_index.pt"))
 
-    print(f"Species count: {len(species_emb)}")
-    print(f"Move count: {len(move_emb)}")
-    print(f"Embedding dim: {index['embedding_dim']}")
+  print(f"Species count: {len(species_emb)}")
+  print(f"Move count: {len(move_emb)}")
+  print(f"Embedding dim: {index['embedding_dim']}")
 
-    # Cosine similarity between related Pokémon
-    from torch.nn.functional import cosine_similarity
+  # Cosine similarity between related Pokémon
+  from torch.nn.functional import cosine_similarity
 
-    pairs_to_check = [
-        ("charizard", "arcanine", "Both Fire types, should be similar"),
-        ("alakazam", "starmie", "Both top-tier Psychic special attackers"),
-        ("snorlax", "chansey", "Both bulky Normal types"),
-        ("charizard", "geodude", "Fire vs Rock/Ground, should differ"),
-        ("mewtwo", "magikarp", "Strongest vs weakest, should differ"),
-    ]
+  pairs_to_check = [
+    ("charizard", "arcanine", "Both Fire types, should be similar"),
+    ("alakazam", "starmie", "Both top-tier Psychic special attackers"),
+    ("snorlax", "chansey", "Both bulky Normal types"),
+    ("charizard", "geodude", "Fire vs Rock/Ground, should differ"),
+    ("mewtwo", "magikarp", "Strongest vs weakest, should differ"),
+  ]
 
-    print("\nSpecies cosine similarities:")
-    for name_a, name_b, reason in pairs_to_check:
-        sim = cosine_similarity(
-            species_emb[name_a].unsqueeze(0),
-            species_emb[name_b].unsqueeze(0)
-        ).item()
-        print(f"  {name_a:12s} ↔ {name_b:12s} = {sim:+.3f}  ({reason})")
+  print("\nSpecies cosine similarities:")
+  for name_a, name_b, reason in pairs_to_check:
+    sim = cosine_similarity(
+      species_emb[name_a].unsqueeze(0),
+      species_emb[name_b].unsqueeze(0)
+    ).item()
+    print(f"  {name_a:12s} ↔ {name_b:12s} = {sim:+.3f}  ({reason})")
 
-    # Move similarities
-    move_pairs = [
-        ("thunderbolt", "thunder", "Same type, different power/accuracy"),
-        ("surf", "icebeam", "Common special coverage pair"),
-        ("sleeppowder", "spore", "Both sleep moves"),
-        ("earthquake", "psychic", "Physical ground vs special psychic"),
-        ("swordsdance", "amnesia", "Both +2 boost moves"),
-    ]
+  # Move similarities
+  move_pairs = [
+    ("thunderbolt", "thunder", "Same type, different power/accuracy"),
+    ("surf", "icebeam", "Common special coverage pair"),
+    ("sleeppowder", "spore", "Both sleep moves"),
+    ("earthquake", "psychic", "Physical ground vs special psychic"),
+    ("swordsdance", "amnesia", "Both +2 boost moves"),
+  ]
 
-    print("\nMove cosine similarities:")
-    for name_a, name_b, reason in move_pairs:
-        sim = cosine_similarity(
-            move_emb[name_a].unsqueeze(0),
-            move_emb[name_b].unsqueeze(0)
-        ).item()
-        print(f"  {name_a:14s} ↔ {name_b:14s} = {sim:+.3f}  ({reason})")
+  print("\nMove cosine similarities:")
+  for name_a, name_b, reason in move_pairs:
+    sim = cosine_similarity(
+      move_emb[name_a].unsqueeze(0),
+      move_emb[name_b].unsqueeze(0)
+    ).item()
+    print(f"  {name_a:14s} ↔ {name_b:14s} = {sim:+.3f}  ({reason})")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate Gen 1 Pokémon LLM embeddings")
-    parser.add_argument("--model", default="all-mpnet-base-v2",
-                        help="Sentence-transformers model name (default: all-mpnet-base-v2)")
-    parser.add_argument("--output-dir", default="embeddings",
-                        help="Output directory (default: embeddings/)")
-    parser.add_argument("--verify", action="store_true",
-                        help="Run verification after generation")
-    args = parser.parse_args()
+  parser = argparse.ArgumentParser(description="Generate Gen 1 Pokémon LLM embeddings")
+  parser.add_argument("--model", default="all-mpnet-base-v2",
+                      help="Sentence-transformers model name (default: all-mpnet-base-v2)")
+  parser.add_argument("--output-dir", default="embeddings",
+                      help="Output directory (default: embeddings/)")
+  parser.add_argument("--verify", action="store_true",
+                      help="Run verification after generation")
+  args = parser.parse_args()
 
-    generate_embeddings(model_name=args.model, output_dir=args.output_dir)
+  generate_embeddings(model_name=args.model, output_dir=args.output_dir)
 
-    if args.verify:
-        verify_embeddings(output_dir=args.output_dir)
+  if args.verify:
+      verify_embeddings(output_dir=args.output_dir)
