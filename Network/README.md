@@ -94,7 +94,7 @@ Generation 1 offers a unique challenge: no abilities, no items in random battles
              ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │              TRANSFORMER ENCODER                                    │
-│              4-layer, 4-head, dim-256, pre-norm, GELI               │
+│              4-layer, 4-head, dim-256, pre-norm, GELU               │
 |              Full bidirectional self-attention (~2.1M params)       |
 |                                                                     |
 |              Each token attends to all 13 tokens:                   |
