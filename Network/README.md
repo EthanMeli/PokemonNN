@@ -383,7 +383,7 @@ The Transformer encoder is the relational backbone of the model. It takes the 13
 | Layers | 4 | Each layer = multi-head attention + feedforward |
 | Attention heads | 4 | 64 dims per head (256 / 4) |
 | Model dimension | 256 | Matches per-Pokémon encoder output |
-| Feedforward dim | 512 | 2× d_model (standard ratio) |
+| Feedforward dim | 1024 | 4 × d_model (standard ratio) |
 | Activation | GELU | Smoother than ReLU, standard in modern Transformers |
 | Normalization | Pre-norm | LayerNorm before attention/FFN (more stable for RL) |
 | Dropout | 0.1 | Applied in attention and feedforward layers |
@@ -401,7 +401,7 @@ For each of 4 layers:
     │                               │
     │  x_norm = LayerNorm(x)        │
     │  x = x + FFN(x_norm)          │  Pre-norm feedforward
-    │      (256 → 512 → 256)        │
+    │      (256 → 1024 → 256)       │
     └───────────────────────────────┘
 ```
  
@@ -493,7 +493,7 @@ Mean pool across all 13 tokens  ──→  Linear(256, 256)  ──→  ReLU  �
  
 **Why mean pooling (not token 0)?** The value of a battle state depends on the *global* situation — both teams' health, composition, and positioning. Mean pooling gives the critic equal access to all information. By contrast, the actor reads only token 0 because the *policy* should be from the active Pokémon's perspective.
  
-**Reward structure** (from project outline): The reward is +1 for a win, -1 for a loss, and 0 for all other turns. The critic learns to predict the expected discounted return from the current state, which PPO uses for advantage estimation via GAE.
+**Reward structure** (from project outline): The reward is +1 for a win, -1 for a loss, and 0 for all other turns. The critic learns to predict the expected discounted return from the current state, which PPO uses for advantage estimation via GAE. (Should update to use recommended structure or some variant from poke-env: https://poke-env.readthedocs.io/en/stable/examples/reinforcement_learning.html#reinforcement-learning).
  
 ### 4.4 Full Model Parameter Summary
  

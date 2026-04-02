@@ -64,7 +64,7 @@ class TransformerConfig:
   num_layer: int = 4          # 4 Transformer layers
   num_heads: int = 4          # 4 attention heads (256/4 = 64 per head)
   d_model: int = 256          # must match Gen1Config.d_model
-  d_feedforward: int = 1024   # standard 4x expansion (256 * 4)
+  d_feedforward: int = 1024   # standard 4 x expansion (256 * 4)
   dropout: float = 0.1
   num_tokens: int = 13        # 12 Pokémon + 1 context
 

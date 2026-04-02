@@ -7,7 +7,7 @@ Architecture context (from project outline, Section 4.1):
   - Every entity gets a frozen 768-dim embedding from a pretrained sentence encoder
     (Sentence-BERT) applied to a rich text description.
   - A learned linear projection (768 → 64) maps these into the RL latent space
-    at training time — that projection is NOT part of this script.
+    at training time — that projection is implemented in pokemon_encoder.py (NOT this script)
   - This script produces the raw frozen embeddings that the model loads.
 
 Gen 1 scope:
@@ -922,4 +922,4 @@ if __name__ == "__main__":
   generate_embeddings(model_name=args.model, output_dir=args.output_dir)
 
   if args.verify:
-      verify_embeddings(output_dir=args.output_dir)
+    verify_embeddings(output_dir=args.output_dir)

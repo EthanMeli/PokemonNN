@@ -290,8 +290,8 @@ class PokemonEncoder(nn.Module):
   Input features per Pokémon:
     - Species embedding (projected): 64
     - 4 × Move embeddings (projected): 4 × 64 = 256
-    - Numeric features (HP, boosts, status, PP, types, flags): ~152
-    Total: ~472
+    - Numeric features (HP, boosts, status, PP, types, flags): ~162
+    Total: ~482
 
   Output: d_model (256) dimensional vector.
   """
