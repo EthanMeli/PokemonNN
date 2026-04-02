@@ -21,7 +21,16 @@ A Transformer actor-critic network with **LLM-initialized entity embeddings** fo
   - [2.2 Battle Context Representation](#22-battle-context-representation)
   - [2.3 Encoding Pipeline](#23-encoding-pipeline)
   - [2.4 Parameter Counts](#24-parameter-counts)
-- [3. Gen 1 Adaptations](#3-gen-1-adaptations)
+- [3. Transformer Encoder](#3-transformer-encoder)
+  - [3.1 Architecture Details](#31-architecture-details)
+  - [3.2 Positional Embeddingds](#32-positional-embeddings)
+  - [3.3 Why Self-Attention Matters for Pokémon](#33-why-self-attention-matters-for-pokémon)
+- [4. Actor-Critic Output Heads](#4-actor-critic-output-heads)
+  - [4.1 Actor Head (Policy)](#41-actor-head-policy)
+  - [4.2 Action Masking](#42-action-masking)
+  - [4.3 Critic Head (Value)](#43-critic-head-value)
+  - [4.4 Full Model Parameter Summary](#44-full-model-parameter-summary)
+- [5. Gen 1 Adaptations](#5-gen-1-adaptations)
 - [File Structure](#file-structure)
 - [Quick Start](#quick-start)
 - [References](#references)
@@ -81,17 +90,33 @@ Generation 1 offers a unique challenge: no abilities, no items in random battles
 │  [Pkmn 1] [Pkmn 2] ... [Pkmn 6] [Opp 1] ... [Opp 6] [Context]       │
 │   ──── own team ────    ──── opponent team ────        battle ctx   │
 └────────────┬────────────────────────────────────────────────────────┘
-             │
+             │ + Learned Positional Embeddings (13 x 256)
              ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│              TRANSFORMER ENCODER (coming soon)                      │
-│              4-layer, 4-head, dim-256                               │
-│                        │                                            │
-│              ┌─────────┴─────────┐                                  │
-│              ▼                   ▼                                  |
-│         Actor Head          Critic Head                             │
-│      (9 actions max)       (scalar value)                           │
-└─────────────────────────────────────────────────────────────────────┘
+│              TRANSFORMER ENCODER                                    │
+│              4-layer, 4-head, dim-256, pre-norm, GELI               │
+|              Full bidirectional self-attention (~2.1M params)       |
+|                                                                     |
+|              Each token attends to all 13 tokens:                   |
+|              own team <--> opponent team <--> battle context        |
+└───────────┬──────────────────────────────────┬──────────────────────┘
+            |                                  |
+     Token 0 (active)                 Head pool (all 13)
+            |                                  |
+            ▼                                  ▼
+┌────────────────────────┐      ┌────────────────────────────┐
+│       ACTOR HEAD       │      │        CRITIC HEAD         │
+│                        │      │                            │
+│  MLP(256 → 256 → 9)    │      │  MLP(256 → 256 → 1)        │
+│         │              │      │         │                  │
+│    Action Masking      │      │    Scalar Value V(s)       │
+│  (invalid → -inf)      │      │                            │
+│         │              │      │  Used for GAE advantage    │
+│         ▼              │      │  estimation in PPO         │
+│  Categorical dist      │      │                            │
+│  over 9 actions        │      │                            │
+│  (4 moves + 5 switch)  │      │                            │
+└────────────────────────┘      └────────────────────────────┘
 ```
 
 ---
@@ -348,7 +373,147 @@ The **battle context** follows a similar but smaller pipeline:
 
 ---
 
-## 3. Gen 1 Adaptations
+## 3. Transformer Encoder
+The Transformer encoder is the relational backbone of the model. It takes the 13 tokens from the per-Pokémon encoder and allows every token to attend to every other token through self-attention — enabling the model to reason about type matchups, team synergies, and threats across both sides of the battle.
+
+### 3.1 Architecture Details
+ 
+| Parameter | Value | Notes |
+|:---|:---:|:---|
+| Layers | 4 | Each layer = multi-head attention + feedforward |
+| Attention heads | 4 | 64 dims per head (256 / 4) |
+| Model dimension | 256 | Matches per-Pokémon encoder output |
+| Feedforward dim | 512 | 2× d_model (standard ratio) |
+| Activation | GELU | Smoother than ReLU, standard in modern Transformers |
+| Normalization | Pre-norm | LayerNorm before attention/FFN (more stable for RL) |
+| Dropout | 0.1 | Applied in attention and feedforward layers |
+| Attention mask | None (full) | Bidirectional — every token attends to all others |
+ 
+**Pre-norm vs. post-norm:** We use pre-norm Transformers (LayerNorm applied *before* attention and feedforward sublayers) because they produce more stable gradients during training. This is important for PPO, where large policy updates can destabilize the network.
+ 
+```
+For each of 4 layers:
+    ┌───────────────────────────────┐
+    │  x_norm = LayerNorm(x)        │
+    │  x = x + MultiHeadAttn(       │
+    │          x_norm, x_norm,      │  Pre-norm attention
+    │          x_norm)              │
+    │                               │
+    │  x_norm = LayerNorm(x)        │
+    │  x = x + FFN(x_norm)          │  Pre-norm feedforward
+    │      (256 → 512 → 256)        │
+    └───────────────────────────────┘
+```
+ 
+### 3.2 Positional Embeddings
+ 
+The 13 token positions carry structural meaning, so we use **learned positional embeddings** (not sinusoidal):
+ 
+| Position | Slot | Meaning |
+|:---:|:---|:---|
+| 0 | Own active Pokémon | The Pokémon currently on the field — **actor head reads this** |
+| 1–5 | Own bench Pokémon | Bench slots 1–5 (potential switch targets) |
+| 6 | Opponent active Pokémon | The opponent's current Pokémon |
+| 7–11 | Opponent bench | May be unknown (encoded with unknown token) |
+| 12 | Battle context | Weather, side conditions, turn count |
+ 
+With only 13 positions, learned embeddings add just 3,328 parameters. They allow the model to learn that positions 0–5 are "friendly" and 6–11 are "hostile" without us hard-coding that distinction.
+ 
+### 3.3 Why Self-Attention Matters for Pokémon
+ 
+Prior Pokémon RL work (Wang 2024, Chen & Lin 2018) used flat MLPs that see the entire state as a single concatenated vector. A Transformer's self-attention mechanism offers a structural advantage: each Pokémon token can *selectively attend* to the tokens most relevant to its current situation.
+ 
+For example, when deciding whether Charizard should use Fire Blast:
+- Charizard's token (position 0) can attend to the opponent's active Pokémon (position 6) to assess type matchup
+- It can attend to its own bench (positions 1–5) to evaluate switch options
+- It can attend to the context token (position 12) for weather conditions
+- It can attend to revealed opponent bench Pokémon (positions 7–11) to anticipate switches
+ 
+The attention pattern is *learned* — the model discovers which cross-entity comparisons are useful for battle decisions through PPO training.
+ 
+---
+ 
+## 4. Actor-Critic Output Heads
+ 
+Both output heads read from the Transformer's contextualized token representations. They share the entire backbone (encoder + Transformer) and diverge only at the final MLPs.
+ 
+### 4.1 Actor Head (Policy)
+ 
+The actor produces a probability distribution over the 9 possible actions.
+ 
+```
+Transformer Output
+       │
+       ▼
+Token 0 (active Pokémon)  ──→  Linear(256, 256)  ──→  ReLU  ──→  Linear(256, 9)
+                                                                       │
+                                                                 action masking
+                                                                       │
+                                                                       ▼
+                                                              Categorical distribution
+```
+ 
+**Why token 0?** The active Pokémon is the one making the decision. Through 4 layers of self-attention, token 0 has already incorporated information from all 12 other tokens — it sees the full battle state from the perspective of the Pokémon that needs to act. Reading a single token (rather than pooling) preserves the position-specific focus that attention learned.
+ 
+**Initialization:** The final linear layer uses orthogonal initialization with a small gain (0.01), following CleanRL best practices. This produces near-uniform initial action probabilities, which is important for PPO — a strongly opinionated initial policy leads to poor exploration.
+ 
+### 4.2 Action Masking
+ 
+Action masking is critical for Pokémon battles because the set of valid actions changes every turn. Following Wang (2024): invalid action logits are set to `-inf` before softmax, giving them exactly 0 probability.
+ 
+| Action Index | Action | When Invalid |
+|:---:|:---|:---|
+| 0 | Use move 1 | Move has 0 PP, or forced to switch |
+| 1 | Use move 2 | Move has 0 PP, disabled, or forced to switch |
+| 2 | Use move 3 | Move has 0 PP, disabled, or forced to switch |
+| 3 | Use move 4 | Move has 0 PP, disabled, or forced to switch |
+| 4 | Switch to bench slot 1 | Pokémon fainted, or trapped by Wrap/Bind |
+| 5 | Switch to bench slot 2 | Pokémon fainted, or trapped |
+| 6 | Switch to bench slot 3 | Pokémon fainted, or trapped |
+| 7 | Switch to bench slot 4 | Pokémon fainted, or trapped |
+| 8 | Switch to bench slot 5 | Pokémon fainted, or trapped |
+ 
+The mask is a boolean tensor provided by the environment (Partner A's observation encoder). The model applies it as: `logits.masked_fill(~mask, -inf)`.
+ 
+**During PPO updates**, the same saved action masks are reapplied when recomputing log probabilities under the updated policy. This ensures the probability ratio `π_new(a|s) / π_old(a|s)` is computed only over the valid action space.
+ 
+### 4.3 Critic Head (Value)
+ 
+The critic estimates how favorable the current battle state is, as a scalar value.
+ 
+```
+Transformer Output
+       │
+       ▼
+Mean pool across all 13 tokens  ──→  Linear(256, 256)  ──→  ReLU  ──→  Linear(256, 1)
+                                                                            │
+                                                                            ▼
+                                                                    Scalar value V(s)
+```
+ 
+**Why mean pooling (not token 0)?** The value of a battle state depends on the *global* situation — both teams' health, composition, and positioning. Mean pooling gives the critic equal access to all information. By contrast, the actor reads only token 0 because the *policy* should be from the active Pokémon's perspective.
+ 
+**Reward structure** (from project outline): The reward is +1 for a win, -1 for a loss, and 0 for all other turns. The critic learns to predict the expected discounted return from the current state, which PPO uses for advantage estimation via GAE.
+ 
+### 4.4 Full Model Parameter Summary
+ 
+| Component | Parameters | % of Total |
+|:---|---:|---:|
+| Entity projections (species, move, unknown) | ~148K | 3.7% |
+| Per-Pokémon MLP + LayerNorm | ~379K | 9.6% |
+| Battle context MLP + LayerNorm | ~73K | 1.8% |
+| Positional encoding (buffer) | 0 | 0% |
+| Transformer encoder (4 layers) | ~3,160K | 79.8% |
+| Actor head | ~134K | 3.4% |
+| Critic head | ~66K | 1.7% |
+| **Total trainable** | **~3.96M** | **100%** |
+| Frozen LLM embeddings (buffers) | 234K | — |
+ 
+The Transformer dominates the parameter budget at ~80%, which is expected — the relational reasoning it provides is the core computational investment. The total of ~4M is appropriate for Gen 1's reduced complexity compared to the outline's 5–10M target for Gen 4. If needed during Week 3 experiments, we can scale to dim-512 (~14M params) or add layers.
+ 
+---
+
+## 5. Gen 1 Adaptations
 
 This architecture was originally designed for Gen 4 (following Wang 2024). Below is a summary of all Gen 1-specific changes.
 
@@ -379,6 +544,7 @@ This architecture was originally designed for Gen 4 (following Wang 2024). Below
 Network/
 ├── generate_embeddings.py     # LLM embedding generation for all Gen 1 entities
 ├── pokemon_encoder.py         # Per-Pokémon encoder (EntityEmbedding + MLP)
+├── battle_model.py            # Full model: Transformer encoder + actor-critic heads
 ├── embeddings/                # Generated embedding files (after running generate_embeddings.py)
 │   ├── species_embeddings.pt  #   Dict: {name → tensor(768,)}
 │   ├── species_matrix.pt      #   Tensor: (151, 768) — for nn.Embedding init
@@ -411,26 +577,44 @@ python pokemon_encoder.py
 
 Runs 6 tests: shape verification, batched forward pass, unknown Pokémon handling, gradient flow, output statistics, and integration with real embeddings (if generated).
 
-### 3. Use in Training (Preview)
-
+### 3. Run Full Model Unit Tests
+ 
+```bash
+python battle_model.py
+```
+ 
+Runs 11 tests covering the complete pipeline: Transformer standalone, action masking correctness, critic head, full forward pass, PPO get_action_and_value (sampling and evaluation), value-only pass for GAE, gradient flow through all components, parameter counts, force-switch scenario, device handling, and real embedding integration.
+ 
+### 4. Use in Training (Preview)
+ 
 ```python
-from pokemon_encoder import TeamEncoder, Gen1Config
+from battle_model import PokemonAgent, TransformerConfig
+from pokemon_encoder import Gen1Config
 import torch
-
-config = Gen1Config()
-
+ 
+gen1_config = Gen1Config()
+tf_config = TransformerConfig()
+ 
 # Load real embeddings
 species_matrix = torch.load("embeddings/species_matrix.pt", weights_only=True, map_location="cpu")
 move_matrix = torch.load("embeddings/move_matrix.pt", weights_only=True, map_location="cpu")
 unknown_emb = torch.load("embeddings/unknown_embedding.pt", weights_only=True, map_location="cpu")
-
-# Build encoder
+ 
+# Build full model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-encoder = TeamEncoder(config, species_matrix, move_matrix, unknown_emb).to(device)
-
-# Forward pass (inputs auto-moved to device)
-tokens = encoder(species_indices, move_indices, numeric_features, context_features)
-# tokens.shape: (batch, 13, 256) — ready for the Transformer encoder
+agent = PokemonAgent(gen1_config, tf_config, species_matrix, move_matrix, unknown_emb).to(device)
+ 
+# Rollout: sample actions from the policy
+action, log_prob, entropy, value = agent.get_action_and_value(
+    species_indices, move_indices, numeric_features, context_features, action_mask
+)
+ 
+# PPO update: evaluate saved actions under the current policy
+_, new_log_prob, new_entropy, new_value = agent.get_action_and_value(
+    species_indices, move_indices, numeric_features, context_features,
+    action_mask, action=saved_actions
+)
+ratio = (new_log_prob - old_log_prob).exp()  # for PPO clipping
 ```
 
 ---
