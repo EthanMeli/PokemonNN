@@ -34,8 +34,8 @@ Usage:
 
   # Forward pass returns policy logits and state value
   logits, value = agent(
-      species_indices, move_indices, numeric_features,
-      context_features, action_mask
+    species_indices, move_indices, numeric_features,
+    context_features, action_mask
   )
 """
 
@@ -89,35 +89,37 @@ class TransformerConfig:
 
 
 # ==========================================================================
-# Positional Encoding
+# Positional Encoding - Learned Embeddings
 # ==========================================================================
 
-class SinusoidalPositionalEncoding(nn.Module):
+class PositionalEmbedding(nn.Module):
   """
-  Fixed sinusoidal positional encoding for 13 token positions.
+  Learned positional embeddings for the 13 token positions.
 
-  We use fixed (non-learned) positional encodings because:
-  - 13 positions is small enough that learned embeddings work too, but
-    sinusoidal encodings are parameter-free and generalize trivially.
-  - The position semantics are fixed: positions 0-5 are always our team,
-    6-11 are always the opponent, 12 is always context. The model can
-    learn these associations through attention patterns.
+  A learned embedding lets each structural slot acquire its own identity
+  vector during training, so the model can immediately distinguish "this
+  token is our active" from "this token is opponent bench slot 3" without
+  having to disentangle a sinusoidal frequency code.
   """
 
-  def __init__(self, d_model: int, max_len: int = 13, dropout: float = 0.1):
+  def __init__(self, num_tokens: int, d_model: int, dropout: float=0.1):
     super().__init__()
-    self.dropout = nn.Dropout(p=dropout)
+    self.num_tokens = num_tokens
+    self.d_model = d_model
 
-    pe = torch.zeros(max_len, d_model)
-    position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-    div_term = torch.exp(
-      torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
-    )
-    pe[:, 0::2] = torch.sin(position * div_term)
-    pe[:, 1::2] = torch.cos(position * div_term)
+    # nn.Embedding gives us a learned vector per integer position.
+    # We use a small init (std=0.02) following GPT/BERT conventions
+    # large positional embeddings can dominate the token signal early in
+    # training and slow learning.
+    self.pos_embedding = nn.Embedding(num_tokens, d_model)
+    nn.init.normal_(self.pos_embedding.weight, mean=0.0, std=0.02)
 
-    # Register as buffer (not a parameter, moves with .to(device))
-    self.register_buffer("pe", pe.unsqueeze(0)) # (1, max_len, d_model)
+    self.dropout = nn.Dropout(dropout)
+
+    # Pre-compute the position index buffer once. Registered as a buffer
+    # so it moves with .to(device)
+    position_ids = torch.arange(num_tokens, dtype=torch.long).unsqueeze(0)  # (1, num_tokens)
+    self.register_buffer("position_ids", position_ids) # (1, num_tokens)
 
   def forward(self, x: torch.Tensor) -> torch.Tensor:
     """
@@ -129,7 +131,9 @@ class SinusoidalPositionalEncoding(nn.Module):
     Returns:
       (batch, seq_len, d_model) with positional encoding added.
     """
-    x = x + self.pe[:, :x.size(1), :]
+    seq_len = x.size(1)
+    pos_emb = self.pos_embedding(self.position_ids[:, :seq_len]) # (1, seq_len, d_model)
+    x = x + pos_emb
     return self.dropout(x)
   
 
@@ -154,9 +158,9 @@ class BattleTransformer(nn.Module):
     super().__init__()
     self.config = config
 
-    self.pos_encoding = SinusoidalPositionalEncoding(
+    self.pos_encoding = PositionalEmbedding(
+      num_tokens=config.num_tokens,
       d_model=config.d_model,
-      max_len=config.num_tokens,
       dropout=config.dropout
     )
 
