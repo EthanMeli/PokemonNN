@@ -294,39 +294,340 @@ def _pokemon_numeric_features(mon, is_active: bool, is_opponent: bool, is_unknow
 
     return features
 
-class Gen1Agent(Player):
-    def __init__(self, model, battle_format="gen1randombattle"):
-        super().__init__(battle_format=battle_format)
-        self.model = model
-        self.memory = []  # store transitions for training
+# ==============================
+# Battle context
+# ==============================
 
-    def embed_battle(self, battle):
-        """Convert battle state → numeric vector"""
-        # Will need to put your embedding function here for this!
-        return np.array([
-            battle.active_pokemon.current_hp_fraction,
-            battle.active_pokemon.current_hp_fraction
-        ], dtype=np.float32)
+# Context offsets
+CTX_OFF_WEATHER     = 0  # + 5
+CTX_OFF_SCREENS     = 5  # + 4 (reflect_us, ls_us, reflect_them, ls_them)
+CTX_OFF_TURN        = 9  # + 6
+CTX_OFF_FORCE_SW    = 15 # +2
+CTX_OFF_UNKNOWN_OPP = 17 # +7
+CTX_TOTAL           = 24
+assert CTX_OFF_UNKNOWN_OPP + 7 == CTX_TOTAL == NUM_CONTEXT_FEATURES
+
+WEATHER_TO_IDX = {"none": 0, "sun": 1, "rain": 2, "sandstorm": 3, "hail": 4,
+                  "sunnyday": 1, "raindance": 2, "sand": 3}
+
+def _context_features(battle) -> np.ndarray:
+    features = np.zeros(NUM_CONTEXT_FEATURES, dtype=np.float32)
+
+    # Weather
+    weather = battle.weather
+    if weather is None or (isinstance(weather, dict) and len(weather) == 0):
+        features[CTX_OFF_WEATHER + 0] = 1.0
+    else:
+        # battle.weather can be a dict {Weather: turn} or a single enum
+        if isinstance(weather, dict):
+            key = _norm(next(iter(weather.keys())))
+        else:
+            key = _norm(weather)
+        features[CTX_OFF_WEATHER + WEATHER_TO_IDX.get(key, 0)] = 1.0
+
+    # Side conditions: Reflect / Light Screen each side
+    def _has(side_conds, name: str) -> bool:
+        if not side_conds:
+            return False
+        for cond in side_conds.keys():
+            if _norm(cond) == name:
+                return True
+        return False
+    
+    features[CTX_OFF_SCREENS + 0] = 1.0 if _has(battle.side_conditions, "reflect") else 0.0
+    features[CTX_OFF_SCREENS + 1] = 1.0 if _has(battle.side_conditions, "lightscreen") else 0.0
+    features[CTX_OFF_SCREENS + 2] = 1.0 if _has(battle.opponent_side_conditions, "reflect") else 0.0
+    features[CTX_OFF_SCREENS + 3] = 1.0 if _has(battle.opponent_side_conditions, "lightscreen") else 0.0
+
+    # Turn count bin
+    turn = int(battle.turn or 0)
+    if   turn <= 4:  bin_idx = 0
+    elif turn <= 9:  bin_idx = 1
+    elif turn <= 19: bin_idx = 2
+    elif turn <= 29: bin_idx = 3
+    elif turn <= 39: bin_idx = 4
+    else:            bin_idx = 5
+    features[CTX_OFF_TURN + bin_idx] = 1.0
+
+    # Force switch
+    force_sw = bool(getattr(battle, "force_switch", False))
+    if isinstance(force_sw, list):
+        force_sw = any(force_sw)
+    features[CTX_OFF_FORCE_SW + (1 if force_sw else 0)] = 1.0
+
+    # Unknown opponent count
+    num_known_opp = len(battle.opponent_team or {})
+    num_unknown = max(0, min(6, 6 - num_known_opp))
+    features[CTX_OFF_UNKNOWN_OPP + num_unknown] = 1.0
+
+    return features
+
+# =============================
+# Slot ordering helpers
+# =============================
+
+def _ordered_own_team(battle) -> List:
+    """Active first, then bench in deterministic sorted order. Length 6 (None-padded)."""
+    active = battle.active_pokemon
+    bench = [mon for key, mon in sorted(battle.team.items()) if mon is not active]
+    result = ([active] if active is not None else [None]) + bench
+    while len(result) < 6:
+        result.append(None)
+    return result[:6]
+
+def _ordered_opp_team(battle) -> List:
+    """Opponent active first, then known bench. None-padded for unrevealed slots."""
+    active = battle.opponent_active_pokemon
+    bench = [mon for key, mon in sorted(battle.opponent_team.items()) if mon is not active]
+    result = ([active] if active is not None else [None]) + bench
+    while len(result) < 6:
+        result.append(None)
+    return result[:6]
+
+# ====================================
+# Top-level embed_battle
+# ====================================
+
+def embed_battle(battle, species_to_idx: Dict[str, int],
+                 move_to_idx: Dict[str, int]) -> Dict[str, torch.Tensor]:
+    """
+    Convert a poke-env battle into the dict of tensors PokemonAgent expects.
+
+    All tensors include a leading batch dim of size 1
+
+    Returns:
+        species_indices  : (1, 12)      int64
+        move_indices     : (1, 12, 4)   int64
+        numeric_features : (1, 12, 162) float32
+        context_features : (1, 24)      float32
+        action_mask      : (1, 9)       bool
+    """
+    own = _ordered_own_team(battle)
+    opp = _ordered_opp_team
+
+    species_indices = np.full(NUM_POKEMON_SLOTS, -1, dtype=np.int64)
+    move_indices = np.full((NUM_POKEMON_SLOTS, NUM_MOVES_PER_POKEMON), -1, dtype=np.int64)
+    numeric = np.zeros((NUM_POKEMON_SLOTS, NUM_NUMERIC_FEATURES), dtype=np.float32)
+
+    # Slots 0..5 = own team
+    for i, mon in enumerate(own):
+        slot = i # 0..5
+        is_active = (i == 0)
+        is_unknown = (mon is None)
+        if not is_unknown:
+            species_indices[slot] = species_to_idx.get(_norm(mon.species), -1)
+            sorted_move_ids = sorted((getattr(mon, "moves", None) or {}).keys())
+            for j, mid in enumerate(sorted_move_ids[:NUM_MOVES_PER_POKEMON]):
+                move_indices[slot, j] = move_to_idx.get(_norm(mid), -1)
+        numeric_slot = _pokemon_numeric_features(
+            mon, is_active=is_active, is_opponent=False, is_unknown=is_unknown
+        )
+
+    # Slots 6..11 = opponent team
+    for i, mon in enumerate(opp):
+        slot = 6 + i
+        is_active = (i == 0)
+        is_unknown = (mon is None)
+        if not is_unknown:
+            species_indices[slot] = species_to_idx(_norm(mon.species), -1)
+            sorted_move_ids = sorted((getattr(mon, "moves", None) or {}).keys())
+            for j, mid in enumerate(sorted_move_ids[:NUM_MOVES_PER_POKEMON]):
+                move_indices[slot, j] = move_to_idx.get(_norm(mid), -1)
+        numeric_slot = _pokemon_numeric_features(
+            mon, is_active=is_active, is_opponent=True, is_unknown=is_unknown
+        )
+
+    context = _context_features(battle)
+    mask = get_action_mask(battle)
+
+    return {
+        "species_indices":  torch.from_numpy(species_indices).unsqueeze(0),
+        "move_indices":     torch.from_numpy(move_indices).unsqueeze(0),
+        "numeric_features": torch.from_numpy(numeric).unsqueeze(0),
+        "context_features": torch.from_numpy(context).unsqueeze(0),
+        "action_mask":      torch.from_numpy(mask).unsqueeze(0),
+    }
+
+# =============================================
+# Action mask + action -> order conversion
+# =============================================
+
+def get_action_mask(battle) -> np.ndarray:
+    """
+    (9, bool). True = legal this turn
+
+    Action layout:
+        0..3 : moves (sorted by move id, matching move_indices for the active mon)
+        4..8 : switches to bench slots 1..5 (sorted by team key, matching species_indices[1:6])
+    """
+    mask = np.zeros(NUM_ACTIONS, dtype=bool)
+
+    active = battle.active_pokemon
+    if active is not None:
+        sorted_move_ids = sorted((getattr(active, "moves", None) or {}).keys())
+        available_ids = {m.id for m in (battle.available_moves or [])}
+        for i, mid in enumerate(sorted_move_ids[:NUM_MOVES_PER_POKEMON]):
+            if mid in available_ids:
+                mask[i] = True
+
+    bench = [mon for key, mon in sorted(battle.team.items()) if mon is not active]
+    available_switch_species = {m.species for m in (battle.available_switches or [])}
+    for i, mon in enumerate(bench[:5]):
+        if mon is not None and mon.species in available_switch_species:
+            mask[4 + i] = True
+
+    return mask
+
+def action_to_order(action_idx: int, battle):
+    """Convert a model action index (0..8) back to a poke-env BattleOrder"""
+    active = battle.active_pokemon
+
+    if action_idx < 4:
+        sorted_move_ids = sorted((getattr(active, "moves", None) or {}).keys())
+        if action_idx >= len(sorted_move_ids):
+            return None
+        move_id = sorted_move_ids[action_idx]
+        move = active.moves[move_id]
+        return Player.create_order(move)
+    else:
+        bench_idx = action_idx - 4
+        bench = [mon for key, mon in sorted(battle.team.items()) if mon is not active]
+        if bench_idx >= len(bench):
+            return None
+        target = bench[bench_idx]
+        return Player.create_order(target)
+    
+# ==============================================
+# Transition record
+# ==============================================
+
+class Transition:
+    """Single (s, a, log_prob, V, r, done, mask) record. Lightweight: numpy/CPU"""
+    __slots__ = ("obs", "action", "log_prob", "value", "reward", "done", "action_mask")
+
+    def __init__(self, obs, action, log_prob, value, reward, done, action_mask):
+        self.obs = obs
+        self.action = action
+        self.log_prob = log_prob
+        self.value = value
+        self.reward = reward
+        self.done = done
+        self.action_mask = action_mask
+
+# ==============================================
+# Gen1RLAgent (trainable PPO Player)
+# ==============================================
+
+class Gen1Agent(Player):
+    """
+    poke-env Player wrapping the PokemonAgent network for PPO self-play
+
+    Per turn (choose_move):
+        1. embed_battle -> obs dict
+        2. forward through PokemonAgent.get_action_and_value
+        3. record (obs, action, log_prob, V, mask) into self.trajectory
+        4. action_to_order -> return BattleOrder
+
+    Reward:
+        Every intermediate turn: 0
+        Battle end:              +1 / -1 / 0 written into LAST transition,
+                                 done=True set on the same transition
+    """
+    def __init__(self, model,
+                 species_to_idx: Dict[str, int],
+                 move_to_idx: Dict[str, int],
+                 device: str = "cpu",
+                 battle_format="gen1randombattle",
+                 deterministic: bool = False,
+                 **kwargs):
+        super().__init__(battle_format=battle_format, **kwargs)
+        self.model = model
+        self.species_to_idx = species_to_idx
+        self.move_to_idx = move_to_idx
+        self.device = torch.device(device)
+        self.deterministic = deterministic
+
+        self.trajectory: List[Transition] = []  # store transitions for training
+        self._completed_trajectories: List[List[Transition]] = []
 
     # most important function to change about the user
     def choose_move(self, battle):
-        state = self.embed_battle(battle)
-        state_tensor = torch.tensor(state, dtype=torch.float32)
+        state = embed_battle(battle, self.species_to_idx, self.move_to_idx)
+        obs_dev = {k: v.to(self.device) for k, v in state.items()}
 
         # Forward pass through model
-        action_scores = self.model(state_tensor)
-        action_idx = int(torch.argmax(action_scores).item())
+        self.model.eval()
+        with torch.no_grad():
+            logits, value = self.model(
+                obs_dev["species_indices"],
+                obs_dev["move_indices"],
+                obs_dev["numeric_features"],
+                obs_dev["context_features"],
+                obs_dev["action_mask"],
+            )
+
+            if self.deterministic:
+                action_idx = int(torch.argmax(logits, dim=-1).item())
+                log_prob = float(torch.log_softmax(logits, dim=-1)[0, action_idx].item())
+            else:
+                dist = torch.distributions.Categorical(logits=logits)
+                action_t = dist.sample()
+                action_idx = int(action_t.item())
+                log_prob = float(dist.log_prob(action_t).item())
+            
+            value_f = float(value.item())
+
+        # Store transition
+        self.trajectory.append(Transition(
+            obs={k: v.cpu() for k, v in state.items()},
+            action=action_idx,
+            log_prob=log_prob,
+            value=value_f,
+            reward=0.0,
+            done=False,
+            action_mask=state["action_mask"].cpu(),
+        ))
 
         # Map action index → legal move
         legal_moves = battle.available_moves
+        if not bool(state["action_mask"][0, action_idx]):
+            return self.choose_random_move(battle)
         if len(legal_moves) == 0:
             return self.choose_random_move(battle)
+        
+        order = action_to_order(action_idx, battle)
+        if order is None:
+            return self.choose_random_move(battle)
 
-        move = legal_moves[action_idx % len(legal_moves)]
+        return order # returns BattleOrder (either move or switch to bench mon)
+    
+    # reward and end-of-battle handling
+    def calc_reward(self, battle) -> float:
+        """Sparse reward: +1 win / -1 loss / 0 otherwise"""
+        if battle.won:
+            return 1.0
+        if battle.lost:
+            return -1.0
+        return 0.0
+    
+    def _battle_finished_callback(self, battle):
+        if self.trajectory:
+            terminal_reward = self.calc_reward(battle)
+            last = self.trajectory[-1]
+            last.reward = terminal_reward
+            last.done = True
+            self._completed_trajectories.append(self.trajectory)
+        self.trajectory = []
+        try:
+            super()._battle_finished_callback(battle)
+        except Exception:
+            pass
 
-        # Store transition (reward placeholder = 0)
-        self.memory.append((state, action_idx, 0, None))
-        return move
+    # trainer-facing API
+    def pop_trajectories(self) -> List[List[Transition]]:
+        out = self._completed_trajectories
+        self._completed_trajectories = []
+        return out
 
 class TestingFeatureExtractionAgent(Player):
     def choose_move(self, battle):
@@ -385,3 +686,29 @@ class TestingFeatureExtractionAgent(Player):
         # ---- Choose a move ----
         # For now, just pick a random valid move
         return self.choose_random_move(battle)
+    
+# ==========================================================================
+# Layout self-test (run `python env.py`)
+# ==========================================================================
+ 
+if __name__ == "__main__":
+    print(f"Numeric layout offsets:")
+    print(f"  HP            {OFF_HP:4d} +{HP_BINS}")
+    print(f"  Status        {OFF_STATUS:4d} +{NUM_STATUS_SLOTS}")
+    print(f"  Toxic counter {OFF_TOX_CNT:4d} +{TOXIC_COUNTER_BINS}")
+    print(f"  Sleep counter {OFF_SLP_CNT:4d} +{SLEEP_COUNTER_BINS}")
+    print(f"  Boosts        {OFF_BOOSTS:4d} +{NUM_BOOST_STATS * BOOST_LEVELS}")
+    print(f"  Move PP       {OFF_PP:4d} +{NUM_MOVES_PER_POKEMON * PP_BINS}")
+    print(f"  Types         {OFF_TYPES:4d} +{NUM_TYPES}")
+    print(f"  Binary flags  {OFF_FLAGS:4d} +6")
+    print(f"  Volatile      {OFF_VOLATILE:4d} +8")
+    print(f"  TOTAL         {TOTAL_NUMERIC}  (expected {NUM_NUMERIC_FEATURES})")
+ 
+    # Smoke test the encoders with a None mon (unknown slot)
+    vec = _pokemon_numeric_features(None, is_active=False, is_opponent=True, is_unknown=True)
+    assert vec.shape == (162,)
+    assert vec[OFF_FLAGS + FLAG_IS_UNKNOWN] == 1.0
+    assert vec[OFF_FLAGS + FLAG_IS_OPPONENT] == 1.0
+    assert vec.sum() == 2.0, f"unknown slot should only set 2 flags, got {vec.sum()}"
+    print("\n[ok] unknown-slot encoder produces correct sparse vector")
+    print("[ok] all assertions passed")
