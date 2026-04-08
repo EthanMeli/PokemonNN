@@ -21,3 +21,5 @@ node pokemon-showdown start --no-security
 ```
 python -m pokemonnn.training.train
 ```
+
+**Note:** The default constants for training (i.e. TOTAL_UPDATES, BATTLES_PER_UPDATE, and VALIDATE_EVERY) are intentionally small here and should be updated for longer training runs.
