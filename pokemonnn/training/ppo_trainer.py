@@ -23,7 +23,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import Adam
 
-from rollout_buffer import RolloutBatch
+from .rollout_buffer import RolloutBatch
 
 
 @dataclass

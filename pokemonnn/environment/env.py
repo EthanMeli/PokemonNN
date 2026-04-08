@@ -45,6 +45,7 @@ NUM_ACTIONS = 9              # 4 moves + 5 switches
 
 # Status -> one-hot index
 STATUS_NONE = 0
+STATUS_FAINTED = 6
 NUM_STATUS_SLOTS = 8
 STATUS_TO_IDX = {"slp": 1, "psn": 2, "brn": 3, "par": 4, "frz": 5, "fnt": 6, "tox": 7}
 
@@ -181,7 +182,7 @@ def _sleep_counter_onehot(mon, out: np.ndarray) -> None:
     bin_idx = max(0, min(counter, SLEEP_COUNTER_BINS - 1))
     out[OFF_SLP_CNT + bin_idx] = 1.0
 
-def _boosts_onehot(mon, out: np.darray) -> None:
+def _boosts_onehot(mon, out: np.ndarray) -> None:
     """6 stats * 13-dim one-hot in BOOST_KEYS order. Default boost = 0."""
     boosts = (getattr(mon, "boosts", None) or {}) if mon is not None else {}
     for i, key in enumerate(BOOST_KEYS):
@@ -403,7 +404,7 @@ def embed_battle(battle, species_to_idx: Dict[str, int],
         action_mask      : (1, 9)       bool
     """
     own = _ordered_own_team(battle)
-    opp = _ordered_opp_team
+    opp = _ordered_opp_team(battle)
 
     species_indices = np.full(NUM_POKEMON_SLOTS, -1, dtype=np.int64)
     move_indices = np.full((NUM_POKEMON_SLOTS, NUM_MOVES_PER_POKEMON), -1, dtype=np.int64)
@@ -419,7 +420,7 @@ def embed_battle(battle, species_to_idx: Dict[str, int],
             sorted_move_ids = sorted((getattr(mon, "moves", None) or {}).keys())
             for j, mid in enumerate(sorted_move_ids[:NUM_MOVES_PER_POKEMON]):
                 move_indices[slot, j] = move_to_idx.get(_norm(mid), -1)
-        numeric_slot = _pokemon_numeric_features(
+        numeric[slot] = _pokemon_numeric_features(
             mon, is_active=is_active, is_opponent=False, is_unknown=is_unknown
         )
 
@@ -429,11 +430,11 @@ def embed_battle(battle, species_to_idx: Dict[str, int],
         is_active = (i == 0)
         is_unknown = (mon is None)
         if not is_unknown:
-            species_indices[slot] = species_to_idx(_norm(mon.species), -1)
+            species_indices[slot] = species_to_idx.get(_norm(mon.species), -1)
             sorted_move_ids = sorted((getattr(mon, "moves", None) or {}).keys())
             for j, mid in enumerate(sorted_move_ids[:NUM_MOVES_PER_POKEMON]):
                 move_indices[slot, j] = move_to_idx.get(_norm(mid), -1)
-        numeric_slot = _pokemon_numeric_features(
+        numeric[slot] = _pokemon_numeric_features(
             mon, is_active=is_active, is_opponent=True, is_unknown=is_unknown
         )
 
@@ -518,7 +519,7 @@ class Transition:
 # Gen1RLAgent (trainable PPO Player)
 # ==============================================
 
-class Gen1Agent(Player):
+class Gen1RLAgent(Player):
     """
     poke-env Player wrapping the PokemonAgent network for PPO self-play
 
@@ -553,6 +554,12 @@ class Gen1Agent(Player):
     # most important function to change about the user
     def choose_move(self, battle):
         state = embed_battle(battle, self.species_to_idx, self.move_to_idx)
+
+        # If no action is legal, fall back to random and don't record a transition
+        mask_np = state["action_mask"][0].numpy()
+        if not mask_np.any():
+            return self.choose_random_move(battle)
+        
         obs_dev = {k: v.to(self.device) for k, v in state.items()}
 
         # Forward pass through model
@@ -565,6 +572,10 @@ class Gen1Agent(Player):
                 obs_dev["context_features"],
                 obs_dev["action_mask"],
             )
+
+            # Sanitize rows so Categorical never receives garbage
+            if not torch.isfinite(logits).any(dim=-1).all():
+                return self.choose_random_move(battle)
 
             if self.deterministic:
                 action_idx = int(torch.argmax(logits, dim=-1).item())
@@ -587,13 +598,6 @@ class Gen1Agent(Player):
             done=False,
             action_mask=state["action_mask"].cpu(),
         ))
-
-        # Map action index → legal move
-        legal_moves = battle.available_moves
-        if not bool(state["action_mask"][0, action_idx]):
-            return self.choose_random_move(battle)
-        if len(legal_moves) == 0:
-            return self.choose_random_move(battle)
         
         order = action_to_order(action_idx, battle)
         if order is None:

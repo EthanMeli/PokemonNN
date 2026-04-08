@@ -20,7 +20,7 @@ class MaxDamagePlayer(Player):
 
 
 async def main():
-    agent = Gen1Agent(SimpleModel(input_size=2, output_size=4))
+    # agent = Gen1Agent(SimpleModel(input_size=2, output_size=4))
     agent = TestingFeatureExtractionAgent(battle_format="gen1randombattle")
     opponent_1 = RandomPlayer(battle_format="gen1randombattle")
     opponent_2 = MaxDamagePlayer(battle_format="gen1randombattle")

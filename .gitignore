@@ -1,1 +1,10 @@
 .conda/
+
+pokemonnn/__pycache__
+
+pokemonnn/environment/__pycache__
+
+pokemonnn/network/__pycache__
+
+pokemonnn/training/__pycache__
+pokemonnn/training/checkpoints

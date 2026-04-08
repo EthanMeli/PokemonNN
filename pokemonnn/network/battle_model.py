@@ -47,7 +47,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from pokemon_encoder import Gen1Config, TeamEncoder
+from .pokemon_encoder import Gen1Config, TeamEncoder
 
 
 # ==========================================================================

@@ -19,7 +19,7 @@ from typing import Dict
 
 from poke_env.player import Player, RandomPlayer
 
-from env import Gen1RLAgent
+from pokemonnn.environment.env import Gen1RLAgent
 
 class MaxDamagePlayer(Player):
     """Heuristic baseline: always pick the highest base-power available move."""
