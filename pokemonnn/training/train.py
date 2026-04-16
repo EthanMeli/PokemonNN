@@ -21,7 +21,7 @@ Run:
 """
 
 from __future__ import annotations
-from poke_env import LocalhostServerConfiguration, ServerConfiguration
+from poke_env import LocalhostServerConfiguration, ServerConfiguration, SimpleHeuristicsPlayer
 
 import asyncio
 import copy
@@ -48,9 +48,9 @@ TOTAL_UPDATES = 1000    # outer PPO iterations
 BATTLES_PER_UPDATE = 64 # rollout battles between updates
 SNAPSHOT_INTERVAL = 25  # refresh self-play opponent every N updates
 VALIDATE_EVERY = 25     # run validation every N updates
-CHECKPOINT_EVERY = 50  # save checkpoint every N updates
+CHECKPOINT_EVERY = 50   # save checkpoint every N updates
 N_VAL_BATTLES = 50      # battles per opponent during validation
-N_INSTANCES = 16         # Number of showdown instances to run parallelized
+N_INSTANCES = 16        # Number of showdown instances to run parallelized
 BATTLES_PER_INSTANCE = BATTLES_PER_UPDATE // N_INSTANCES
 RESUME_FROM: Path | None = Path("pokemonnn/training/checkpoints/agent_update_0950.pt") # e.b.g Path("pokemonnn/training/checkpoints/agent_update_0100.pt")
 
@@ -313,6 +313,7 @@ async def train():
                 f"[val {update:4d}] "
                 f"vs_random={val.vs_random_winrate:.3f} "
                 f"vs_maxdmg={val.vs_maxdamage_winrate:.3f} "
+                f"vs_simpleheuristic={val.vs_simpleheuristics_winrate:.3f} "
                 f"(n={val.n_battles_each})"
             )
         

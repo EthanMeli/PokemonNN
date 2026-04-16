@@ -5,7 +5,7 @@ from pathlib import Path
 import os
 import socket
 
-SHOWDOWN_PATH = Path(r"C:\Users\elite\Documents\pokemon-showdown")
+SHOWDOWN_PATH = Path(r"C:\Users\elite\Documents\pokemon-showdown") # TODO: Input own showdown path
 NUM_INSTANCES = 16
 BASE_PORT = 8000
 
