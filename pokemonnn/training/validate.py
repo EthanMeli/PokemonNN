@@ -17,7 +17,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Dict
 
-from poke_env.player import Player, RandomPlayer
+from poke_env.player import Player, RandomPlayer, SimpleHeuristicsPlayer
 
 from pokemonnn.environment.env import Gen1RLAgent
 
@@ -33,12 +33,14 @@ class MaxDamagePlayer(Player):
 class ValidationResult:
     vs_random_winrate: float
     vs_maxdamage_winrate: float
+    vs_simpleheuristics_winrate: float
     n_battles_each: int
 
     def to_dict(self) -> Dict[str, float]:
         return {
             "val/vs_random_winrate": self.vs_random_winrate,
             "val/vs_maxdamage_winrate": self.vs_maxdamage_winrate,
+            "val/vs_simpleheuristics_winrate": self.vs_simpleheuristics_winrate,
             "val/n_battles": self.n_battles_each,
         }
     
@@ -68,9 +70,11 @@ async def validate(model, species_to_idx, move_to_idx,
 
     random_opp = RandomPlayer(battle_format=battle_format)
     maxdmg_opp = MaxDamagePlayer(battle_format=battle_format)
+    simpleheuristics = SimpleHeuristicsPlayer(battle_format=battle_format)
 
     vs_random = await _play_n(val_agent, random_opp, n_battles)
     vs_maxdmg = await _play_n(val_agent, maxdmg_opp, n_battles)
+    vs_simpleheuristics = await _play_n(val_agent, simpleheuristics, n_battles)
 
     # Drop trajectories collected during validation
     val_agent.pop_trajectories()
@@ -78,5 +82,6 @@ async def validate(model, species_to_idx, move_to_idx,
     return ValidationResult(
         vs_random_winrate=vs_random,
         vs_maxdamage_winrate=vs_maxdmg,
+        vs_simpleheuristics_winrate=vs_simpleheuristics,
         n_battles_each=n_battles,
     )

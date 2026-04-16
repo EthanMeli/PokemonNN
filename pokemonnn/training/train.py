@@ -52,7 +52,7 @@ CHECKPOINT_EVERY = 50  # save checkpoint every N updates
 N_VAL_BATTLES = 50      # battles per opponent during validation
 N_INSTANCES = 16         # Number of showdown instances to run parallelized
 BATTLES_PER_INSTANCE = BATTLES_PER_UPDATE // N_INSTANCES
-RESUME_FROM: Path | None = None # e.b.g Path("pokemonnn/training/checkpoints/agent_update_0100.pt")
+RESUME_FROM: Path | None = Path("pokemonnn/training/checkpoints/agent_update_0950.pt") # e.b.g Path("pokemonnn/training/checkpoints/agent_update_0100.pt")
 
 CHECKPOINT_DIR = Path("pokemonnn/training/checkpoints")
 EMBEDDINGS_DIR = Path("pokemonnn/network/embeddings")
