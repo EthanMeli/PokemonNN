@@ -22,10 +22,10 @@ from .rollout_buffer import RolloutBuffer
 from .ppo_trainer import PPOConfig, PPOTrainer
 from .validate import validate
 
-RESUME_FROM: Path | None = Path("pokemonnn/training/checkpoints/agent_update_0036.pt") # e.b.g Path("pokemonnn/training/checkpoints/agent_update_0100.pt")
+RESUME_FROM: Path | None = Path("pokemonnn/training/checkpoints/agent_update_0060.pt") # e.b.g Path("pokemonnn/training/checkpoints/agent_update_0100.pt")
 CHECKPOINT_DIR = Path("pokemonnn/training/checkpoints")
 EMBEDDINGS_DIR = Path("pokemonnn/network/embeddings")
-START_UPDATE = 36
+START_UPDATE = 60
 UPDATES = 100
 
 def build_model(device: torch.device) -> PokemonAgent:
@@ -174,7 +174,8 @@ async def main():
         battle_format="gen1randombattle",
         deterministic=False,
         server_configuration=ShowdownServerConfiguration,
-        account_configuration=AccountConfiguration("pokenn885", "Edoge1234")
+        account_configuration=AccountConfiguration("pokenn885", "Edoge1234"),
+        start_timer_on_battle_start=True,
     )
     
     player8 = Gen1RLAgent(
@@ -185,10 +186,11 @@ async def main():
         battle_format="gen1randombattle",
         deterministic=False,
         server_configuration=ShowdownServerConfiguration,
-        account_configuration=AccountConfiguration("pokenn886", "Edoge1234")
+        account_configuration=AccountConfiguration("pokenn886", "Edoge1234"),
+        start_timer_on_battle_start=True,
     )
     
-    players = [player1, player2, player3, player4, player5, player6]
+    players = [player1, player2, player3, player4, player5, player6, player7, player8]
     
     if RESUME_FROM is not None:
         if RESUME_FROM.exists():

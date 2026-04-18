@@ -21,7 +21,8 @@ Run:
 """
 
 from __future__ import annotations
-from poke_env import LocalhostServerConfiguration, ServerConfiguration, SimpleHeuristicsPlayer
+from poke_env import LocalhostServerConfiguration, ServerConfiguration
+from poke_env.player import SimpleHeuristicsPlayer
 
 import asyncio
 import copy
@@ -44,17 +45,17 @@ from .validate import validate
 
 GAMMA = 0.99
 GAE_LAMBDA = 0.95
-TOTAL_UPDATES = 1000    # outer PPO iterations
-BATTLES_PER_UPDATE = 64 # rollout battles between updates
-SNAPSHOT_INTERVAL = 25  # refresh self-play opponent every N updates
-VALIDATE_EVERY = 25     # run validation every N updates
-CHECKPOINT_EVERY = 50   # save checkpoint every N updates
+TOTAL_UPDATES = 5000    # outer PPO iterations
+BATTLES_PER_UPDATE = 48 # rollout battles between updates
+SNAPSHOT_INTERVAL = 10  # refresh self-play opponent every N updates
+VALIDATE_EVERY = 10     # run validation every N updates
+CHECKPOINT_EVERY = 10   # save checkpoint every N updates
 N_VAL_BATTLES = 50      # battles per opponent during validation
-N_INSTANCES = 16        # Number of showdown instances to run parallelized
+N_INSTANCES = 8         # Number of showdown instances to run parallelized
 BATTLES_PER_INSTANCE = BATTLES_PER_UPDATE // N_INSTANCES
-RESUME_FROM: Path | None = Path("pokemonnn/training/checkpoints/agent_update_0950.pt") # e.b.g Path("pokemonnn/training/checkpoints/agent_update_0100.pt")
+RESUME_FROM: Path | None = None # e.b.g Path("pokemonnn/training/checkpoints/agent_update_0100.pt")
 
-CHECKPOINT_DIR = Path("pokemonnn/training/checkpoints")
+CHECKPOINT_DIR = Path("pokemonnn/training/checkpoints_snapandsimple")
 EMBEDDINGS_DIR = Path("pokemonnn/network/embeddings")
 
 # ==================================
@@ -179,16 +180,22 @@ def make_parallel_agents(model, species_to_idx, move_to_idx, device, battle_form
             # username=f"Learner{i}",
         )
         
-        opponent = Gen1RLAgent(
-            model=snap,
-            species_to_idx=species_to_idx,
-            move_to_idx=move_to_idx,
-            device=device,
-            battle_format=battle_format,
-            deterministic=False,
-            server_configuration=server_cfg,
-            # username=f"Opponent{i}",
-        )
+        if i % 2 == 0:
+            opponent = Gen1RLAgent(
+                model=snap,
+                species_to_idx=species_to_idx,
+                move_to_idx=move_to_idx,
+                device=device,
+                battle_format=battle_format,
+                deterministic=False,
+                server_configuration=server_cfg,
+                # username=f"Opponent{i}",
+            )    
+        else:
+            opponent = SimpleHeuristicsPlayer(
+                battle_format=battle_format,
+                server_configuration=server_cfg
+            )
         
         learners.append(learner)
         opponents.append(opponent)
@@ -265,11 +272,15 @@ async def train():
             for learner, opponent in zip(learners, opponents)
         ])
         
-        # Drain opponent's trajectories too (we don't train on them)
         trajectories = []
-        for learner, opponent in zip(learners, opponents):
+        for learner in learners:
             trajectories.extend(learner.pop_trajectories())     
-            opponent.pop_trajectories()
+        
+        # Drain only snapshot opponents' trajectories (SimpleHeuristic doesn't have this)
+        for i in range(len(opponents)):
+            if i % 2 == 0:
+                opponents[i].pop_trajectories()
+    
         t1 = time.time()
 
         # 2. Collect into buffer
